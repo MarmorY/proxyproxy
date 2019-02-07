@@ -7,7 +7,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"net/http"
 
 	"github.com/alexbrainman/sspi/ntlm"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -35,25 +35,33 @@ type ProxyCommunication struct {
 	proxyReader        *bufio.Reader
 	currentRequest     *http.Request
 	currentResponse    *http.Response
+	logger             *logrus.Entry
 }
+
+var (
+	connectionCount = 0
+)
 
 func handleConnection(clientConn net.Conn, proxyAddress string) {
 
-	log.Printf("Create new proxy connection for %v\n", clientConn.RemoteAddr())
-
 	communication, err := NewProxyCommunication(clientConn, proxyAddress)
+
+	logger := communication.logger
+
 	if err != nil {
-		log.Printf("Error initializig communication: %v", err)
+		logger.Infof("Error initializig communication: %v", err)
 		return
 	}
 
 	//Check if authentication is nessesary
 	if communication.isNtlmAuhtenticationRequired() {
+
 		//Phase 1: NTLM Authentication requeseted
 		//Aquire credentials for current user
+		logger.Debug("NTLM Authentication request detected")
 		cred, err := ntlm.AcquireCurrentUserCredentials()
 		if err != nil {
-			log.Printf("Cannot aquire current user credentials: %v", err)
+			logger.Infof("Cannot aquire current user credentials: %v", err)
 			return
 		}
 		defer cred.Release()
@@ -61,12 +69,12 @@ func handleConnection(clientConn net.Conn, proxyAddress string) {
 		//Retrieve Security Context
 		secctx, negotiate, err := ntlm.NewClientContext(cred)
 		if err != nil {
-			log.Printf("Cannot retrieve security context: %v", err)
+			logger.Infof("Cannot retrieve security context: %v", err)
 			return
 		}
 
 		if err := communication.sendRequestWithAuthHeader(negotiate); err != nil {
-			log.Printf("Error sending auth phase 1: %v", err)
+			logger.Infof("Error sending auth phase 1: %v", err)
 			return
 		}
 
@@ -78,12 +86,12 @@ func handleConnection(clientConn net.Conn, proxyAddress string) {
 			challengeBytes, _ := base64.StdEncoding.DecodeString(challengeString)
 			authenticate, err := secctx.Update(challengeBytes)
 			if err != nil {
-				log.Printf("Error challanging token: %v\n", err)
+				logger.Infof("Error challanging token: %v\n", err)
 				return
 			}
 
 			if err := communication.sendRequestWithAuthHeader(authenticate); err != nil {
-				log.Printf("Errer sending auth phase 2: %v", err)
+				logger.Infof("Error sending auth phase 2: %v", err)
 				return
 			}
 
@@ -97,6 +105,13 @@ func handleConnection(clientConn net.Conn, proxyAddress string) {
 
 func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyCommunication, error) {
 
+	connectionCount++
+	connId := connectionCount
+
+	logger := logrus.WithFields(logrus.Fields{"Id": connId, "client": clientConn.RemoteAddr()})
+
+	logger.Info("Creating new proxy connection")
+
 	proxyConn, err := net.DialTimeout("tcp", proxyAddress, 10*time.Second)
 	if err != nil {
 		return nil, errors.New(fmt.Sprintf("Error opening connection to proxy: %v", err))
@@ -105,6 +120,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyComm
 	result := &ProxyCommunication{
 		proxyConnection:  proxyConn,
 		clientConnection: clientConn,
+		logger:           logger,
 	}
 
 	result.clientReader = bufio.NewReader(clientConn)
@@ -114,7 +130,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyComm
 	if err := result.parseCurrentRequest(); err != nil {
 		return nil, err
 	}
-	log.Printf("Processing request %v %v\n", result.currentRequest.Method, result.currentRequest.RequestURI)
+	logger.Infof("Processing request %v %v\n", result.currentRequest.Method, result.currentRequest.RequestURI)
 
 	result.isTunnel = result.currentRequest.Method == http.MethodConnect
 	if result.isTunnel {
@@ -130,9 +146,8 @@ func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyComm
 
 	//Send request to ProxyCommunication
 	prepareRequest(result.currentRequest)
-	result.currentRequest.Write(result.proxyConnection)
 
-	if err := result.retrieveResponse(); err != nil {
+	if err := result.sendRequest(); err != nil {
 		return nil, errors.New(fmt.Sprintf("Error retrieving initial response from proxy: %v", err))
 	}
 
@@ -142,6 +157,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyComm
 
 func (pc *ProxyCommunication) getNTLMToken() string {
 	value := pc.currentResponse.Header.Get(pc.responseHeader)
+	pc.logger.WithFields(logrus.Fields{"token": value}).Debug("Recieved auth token")
 	return value
 }
 
@@ -167,14 +183,20 @@ func (pc *ProxyCommunication) isExpectedResponseCode() bool {
 }
 
 func (pc *ProxyCommunication) sendRequestWithAuthHeader(authPayload []byte) error {
+	token := ntlmAuthMethod + " " + base64.StdEncoding.EncodeToString(authPayload)
+	pc.logger.WithFields(logrus.Fields{"token": token}).Debug("Sending Token")
+	pc.currentRequest.Header.Set(pc.requestHeader, token)
+	return pc.sendRequest()
+}
 
-	pc.currentRequest.Header.Set(pc.requestHeader, ntlmAuthMethod+" "+base64.StdEncoding.EncodeToString(authPayload))
-
+func (pc *ProxyCommunication) sendRequest() error {
+	pc.logger.Debug("Sending Request")
 	pc.currentRequest.Write(pc.proxyConnection)
 
 	if err := pc.retrieveResponse(); err != nil {
 		return errors.New(fmt.Sprintf("Error retrieving response after sending auth header: %v", err))
 	}
+	pc.logger.Debugf("Recieved Response with Status: %v", pc.currentResponse.StatusCode)
 
 	return nil
 }
@@ -215,7 +237,7 @@ func (pc *ProxyCommunication) handleRemainingCommunication() error {
 	wg.Add(1)
 	go transfer(pc.clientConnection, pc.proxyReader, &wg)
 	wg.Wait()
-	log.Printf("Closing proxy connection for %v\n", pc.clientConnection.RemoteAddr())
+	pc.logger.Info("Closing proxy connection")
 	pc.clientConnection.Close()
 	pc.proxyConnection.Close()
 
@@ -233,8 +255,17 @@ func prepareRequest(request *http.Request) {
 }
 
 func main() {
+
+	//Confugure Logging
+	logrus.SetFormatter(&logrus.TextFormatter{
+		ForceColors:   true,
+		FullTimestamp: false,
+	})
+
+	//Define CLI flags
 	destinationProxy := flag.String("proxy", "", "destination proxy: <ip addr>:<port>")
 	listenAddress := flag.String("listen", "127.0.0.1:3128", "adress to list on: [ip addr]:<port>")
+	debug := flag.Bool("v", false, "Verbose output")
 
 	flag.Parse()
 
@@ -250,17 +281,22 @@ func main() {
 		return
 	}
 
-	log.Printf("Listening on %v", *listenAddress)
-	log.Printf("Connection to %v", *destinationProxy)
+	if *debug {
+		logrus.SetLevel(logrus.DebugLevel)
+		logrus.Debug("Verbos output is enabled.")
+	}
+
+	logrus.Infof("Listening on %v", *listenAddress)
+	logrus.Infof("Connection to %v", *destinationProxy)
 
 	ln, err := net.Listen("tcp", *listenAddress)
 	if err != nil {
-		log.Fatalf("Error: %v", err)
+		logrus.Fatalf("Error: %v", err)
 	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			log.Fatalf("Error: %v", err)
+			logrus.Fatalf("Error: %v", err)
 		}
 		go handleConnection(conn, *destinationProxy)
 	}
