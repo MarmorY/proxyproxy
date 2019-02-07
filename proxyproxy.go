@@ -21,7 +21,8 @@ import (
 )
 
 const (
-	ntlmAuthMethod = "NTLM"
+	ntlmAuthMethod  = "NTLM"
+	proxyBufferSize = 4096
 )
 
 type ProxyCommunication struct {
@@ -46,12 +47,12 @@ func handleConnection(clientConn net.Conn, proxyAddress string) {
 
 	communication, err := NewProxyCommunication(clientConn, proxyAddress)
 
-	logger := communication.logger
-
 	if err != nil {
-		logger.Infof("Error initializig communication: %v", err)
+		logrus.Infof("Error initializig communication: %v", err)
 		return
 	}
+
+	logger := communication.logger
 
 	//Check if authentication is nessesary
 	if communication.isNtlmAuhtenticationRequired() {
@@ -124,7 +125,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyComm
 	}
 
 	result.clientReader = bufio.NewReader(clientConn)
-	result.proxyReader = bufio.NewReader(proxyConn)
+	result.proxyReader = bufio.NewReaderSize(proxyConn, proxyBufferSize)
 
 	//Parse client's request
 	if err := result.parseCurrentRequest(); err != nil {
@@ -193,15 +194,50 @@ func (pc *ProxyCommunication) sendRequest() error {
 	pc.logger.Debug("Sending Request")
 	pc.currentRequest.Write(pc.proxyConnection)
 
+	if err := pc.peekResponse(); err != nil {
+		return errors.New(fmt.Sprintf("Error peeking response after sending request: %v", err))
+	}
+
 	if err := pc.retrieveResponse(); err != nil {
-		return errors.New(fmt.Sprintf("Error retrieving response after sending auth header: %v", err))
+		return errors.New(fmt.Sprintf("Error retrieving response after sending request: %v", err))
 	}
 	pc.logger.Debugf("Recieved Response with Status: %v", pc.currentResponse.StatusCode)
 
 	return nil
 }
 
+func (pc *ProxyCommunication) peekResponse() error {
+
+	//Read byte and unread it to trigger filling the buffer
+	if _, err := pc.proxyReader.ReadByte(); err != nil {
+		return err
+	}
+	if err := pc.proxyReader.UnreadByte(); err != nil {
+		return err
+	}
+
+	peekSize := pc.proxyReader.Buffered()
+	pc.logger.Debugf("Buffered bytes: %v", peekSize)
+	buf, err := pc.proxyReader.Peek(peekSize)
+	if err != nil {
+		pc.logger.Debugf("Peek result: %v", err)
+	}
+	pc.logger.Debugf("Peeked %v bytes", len(buf))
+
+	peekReader := bufio.NewReader(bytes.NewReader(buf))
+
+	response, err := http.ReadResponse(peekReader, pc.currentRequest)
+	if err != nil {
+		return errors.New(fmt.Sprintf("Error parsing http response: %v", err))
+	}
+	response.Body.Close()
+	pc.logger.WithFields(logrus.Fields{"status": response.StatusCode}).Debug("Peeked status")
+
+	return nil
+}
+
 func (pc *ProxyCommunication) retrieveResponse() error {
+	pc.logger.Debug("Retrieving repsonse")
 	response, err := http.ReadResponse(pc.proxyReader, pc.currentRequest)
 	if err != nil {
 		return errors.New(fmt.Sprintf("Error parsing http response: %v", err))
