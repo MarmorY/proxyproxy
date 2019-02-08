@@ -222,14 +222,11 @@ func (pc *ProxyCommunication) sendRequest() error {
 
 func (pc *ProxyCommunication) peekResponse() error {
 
-	//Read byte and unread it to trigger filling the buffer
-	if _, err := pc.proxyReader.ReadByte(); err != nil {
-		return err
-	}
-	if err := pc.proxyReader.UnreadByte(); err != nil {
-		return err
-	}
+	//Peek 1 byte to trigger buffered reader to fill it's buffer
+	//if it isn't already filled
+	pc.proxyReader.Peek(1)
 
+	//Peek buffered data from TCP stream
 	peekSize := pc.proxyReader.Buffered()
 	buf, err := pc.proxyReader.Peek(peekSize)
 	if err != nil {
@@ -306,12 +303,6 @@ func prepareRequest(request *http.Request) {
 }
 
 func main() {
-
-	//Confugure Logging
-	logrus.SetFormatter(&logrus.TextFormatter{
-		ForceColors:   true,
-		FullTimestamp: false,
-	})
 
 	//Define CLI flags
 	destinationProxy := flag.String("proxy", "", "destination proxy: <ip addr>:<port>")
