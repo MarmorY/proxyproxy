@@ -1,0 +1,6 @@
+language: go
+
+go:
+- 1.11.x
+
+script: GOOS=windows GOARCH=amd64 go build
