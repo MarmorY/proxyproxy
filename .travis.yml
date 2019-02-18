@@ -3,4 +3,8 @@ language: go
 go:
 - 1.11.x
 
-script: GOOS=windows GOARCH=amd64 go build
+env:
+  - GO111MODULE=on
+  - GOOS=window
+  - GOARCH=amd6
+script: go build
