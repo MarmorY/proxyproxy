@@ -6,5 +6,5 @@ go:
 env:
   - GO111MODULE=on
   - GOOS=window
-  - GOARCH=amd6
+  - GOARCH=amd64
 script: go build
