@@ -1,14 +1,12 @@
-package main
+package proxyproxy
 
 import (
 	"bufio"
 	"bytes"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"net"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -19,7 +17,6 @@ import (
 
 	"github.com/alexbrainman/sspi/ntlm"
 	"github.com/apex/log"
-	"github.com/apex/log/handlers/cli"
 )
 
 const (
@@ -295,48 +292,4 @@ func transfer(destination io.Writer, source io.Reader, wg *sync.WaitGroup) {
 func prepareRequest(request *http.Request) {
 	request.Header.Set("Proxy-Connection", "keep-alive")
 	request.Header.Set("Connection", "keep-alive")
-}
-
-func main() {
-
-	log.SetHandler(cli.New(os.Stdout))
-
-	//Define CLI flags
-	destinationProxy := flag.String("proxy", "", "destination proxy: <ip addr>:<port>")
-	listenAddress := flag.String("listen", "127.0.0.1:3128", "adress to list on: [ip addr]:<port>")
-	debug := flag.Bool("v", false, "Verbose output")
-
-	flag.Parse()
-
-	if *destinationProxy == "" {
-		fmt.Println("Parameter \"proxy\" is not set.")
-		flag.PrintDefaults()
-		return
-	}
-
-	if *listenAddress == "" {
-		fmt.Println("Parameter \"listen\" is not set.")
-		flag.PrintDefaults()
-		return
-	}
-
-	if *debug {
-		log.SetLevel(log.DebugLevel)
-		log.Debug("Verbos output is enabled.")
-	}
-
-	log.Infof("Listening on %v", *listenAddress)
-	log.Infof("Connection to %v", *destinationProxy)
-
-	ln, err := net.Listen("tcp", *listenAddress)
-	if err != nil {
-		log.Fatalf("Error: %v", err)
-	}
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			log.Fatalf("Error: %v", err)
-		}
-		go handleConnection(conn, *destinationProxy)
-	}
 }
