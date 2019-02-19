@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -17,7 +18,8 @@ import (
 	"net/http"
 
 	"github.com/alexbrainman/sspi/ntlm"
-	"github.com/sirupsen/logrus"
+	"github.com/apex/log"
+	"github.com/apex/log/handlers/cli"
 )
 
 const (
@@ -37,7 +39,7 @@ type ProxyCommunication struct {
 	currentRequest     *http.Request
 	currentResponse    *http.Response
 	peekedResponse     *http.Response
-	logger             *logrus.Entry
+	logger             *log.Entry
 }
 
 var (
@@ -49,7 +51,7 @@ func handleConnection(clientConn net.Conn, proxyAddress string) {
 	communication, err := NewProxyCommunication(clientConn, proxyAddress)
 
 	if err != nil {
-		logrus.Infof("Error initializig communication: %v", err)
+		log.Infof("Error initializig communication: %v", err)
 		return
 	}
 
@@ -121,7 +123,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyComm
 	connectionCount++
 	connId := connectionCount
 
-	logger := logrus.WithFields(logrus.Fields{"Id": connId, "client": clientConn.RemoteAddr()})
+	logger := log.WithFields(log.Fields{"Id": connId, "client": clientConn.RemoteAddr()})
 
 	logger.Info("Creating new proxy connection")
 
@@ -143,7 +145,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyComm
 	if err := result.parseCurrentRequest(); err != nil {
 		return nil, err
 	}
-	logger.Infof("Processing request %v %v\n", result.currentRequest.Method, result.currentRequest.RequestURI)
+	logger.Infof("Processing request %v %v", result.currentRequest.Method, result.currentRequest.RequestURI)
 
 	result.isTunnel = result.currentRequest.Method == http.MethodConnect
 	if result.isTunnel {
@@ -170,7 +172,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyComm
 
 func (pc *ProxyCommunication) getNTLMToken() string {
 	value := pc.peekedResponse.Header.Get(pc.responseHeader)
-	pc.logger.WithFields(logrus.Fields{"token": value}).Debug("Recieved auth token")
+	pc.logger.WithFields(log.Fields{"token": value}).Debug("Recieved auth token")
 	return value
 }
 
@@ -197,7 +199,7 @@ func (pc *ProxyCommunication) isExpectedResponseCode() bool {
 
 func (pc *ProxyCommunication) sendRequestWithAuthHeader(authPayload []byte) error {
 	token := ntlmAuthMethod + " " + base64.StdEncoding.EncodeToString(authPayload)
-	pc.logger.WithFields(logrus.Fields{"token": token}).Debug("Sending Token")
+	pc.logger.WithFields(log.Fields{"token": token}).Debug("Sending Token")
 	pc.currentRequest.Header.Set(pc.requestHeader, token)
 	return pc.sendRequest()
 }
@@ -209,13 +211,6 @@ func (pc *ProxyCommunication) sendRequest() error {
 	if err := pc.peekResponse(); err != nil {
 		return errors.New(fmt.Sprintf("Error peeking response after sending request: %v", err))
 	}
-
-	/*
-		if err := pc.retrieveResponse(); err != nil {
-			return errors.New(fmt.Sprintf("Error retrieving response after sending request: %v", err))
-		}
-		pc.logger.Debugf("Recieved Response with Status: %v", pc.currentResponse.StatusCode)
-	*/
 
 	return nil
 }
@@ -241,7 +236,7 @@ func (pc *ProxyCommunication) peekResponse() error {
 		return errors.New(fmt.Sprintf("Error parsing http response: %v", err))
 	}
 	response.Body.Close()
-	pc.logger.WithFields(logrus.Fields{"status": response.StatusCode}).Debug("Peeked status")
+	pc.logger.WithFields(log.Fields{"status": response.StatusCode}).Debug("Peeked status")
 
 	pc.peekedResponse = response
 
@@ -304,6 +299,8 @@ func prepareRequest(request *http.Request) {
 
 func main() {
 
+	log.SetHandler(cli.New(os.Stdout))
+
 	//Define CLI flags
 	destinationProxy := flag.String("proxy", "", "destination proxy: <ip addr>:<port>")
 	listenAddress := flag.String("listen", "127.0.0.1:3128", "adress to list on: [ip addr]:<port>")
@@ -324,21 +321,21 @@ func main() {
 	}
 
 	if *debug {
-		logrus.SetLevel(logrus.DebugLevel)
-		logrus.Debug("Verbos output is enabled.")
+		log.SetLevel(log.DebugLevel)
+		log.Debug("Verbos output is enabled.")
 	}
 
-	logrus.Infof("Listening on %v", *listenAddress)
-	logrus.Infof("Connection to %v", *destinationProxy)
+	log.Infof("Listening on %v", *listenAddress)
+	log.Infof("Connection to %v", *destinationProxy)
 
 	ln, err := net.Listen("tcp", *listenAddress)
 	if err != nil {
-		logrus.Fatalf("Error: %v", err)
+		log.Fatalf("Error: %v", err)
 	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
-			logrus.Fatalf("Error: %v", err)
+			log.Fatalf("Error: %v", err)
 		}
 		go handleConnection(conn, *destinationProxy)
 	}
