@@ -1,4 +1,4 @@
-package proxyproxy
+package authproxy
 
 import (
 	"bufio"
@@ -37,13 +37,25 @@ type ProxyCommunication struct {
 	currentResponse    *http.Response
 	peekedResponse     *http.Response
 	logger             *log.Entry
+	proxyAddress       string
+}
+
+type NtlmAuhtHandler interface {
+	GetContext() (SecurityContext, error)
+	Close() error
+}
+
+type SecurityContext interface {
+	GetNegotiate() []byte
+	GetAuthenticateFromChallange(challange []byte) ([]byte, error)
+	Close() error
 }
 
 var (
 	connectionCount = 0
 )
 
-func handleConnection(clientConn net.Conn, proxyAddress string) {
+func HandleConnection(clientConn net.Conn, proxyAddress string) {
 
 	communication, err := NewProxyCommunication(clientConn, proxyAddress)
 
@@ -115,7 +127,7 @@ func handleConnection(clientConn net.Conn, proxyAddress string) {
 
 }
 
-func NewProxyCommunication(clientConn net.Conn, proxyAddress string) (*ProxyCommunication, error) {
+func NewProxyCommunication(clientConn net.Conn, proxyAddress string, authHandler NtlmAuhtHandler) (*ProxyCommunication, error) {
 
 	connectionCount++
 	connId := connectionCount
