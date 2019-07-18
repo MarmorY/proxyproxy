@@ -12,8 +12,6 @@ import (
 	"encoding/base64"
 	"io/ioutil"
 	"net/http"
-
-	"github.com/apex/log"
 )
 
 const (
@@ -36,9 +34,10 @@ type ProxyCommunication struct {
 	currentRequest     *http.Request
 	currentResponse    *http.Response
 	peekedResponse     *http.Response
-	logger             *log.Entry
+	eventListener      ProxyEventListener
 	proxyAddress       string
 	authHandler        NtlmAuhtHandler
+	id                 int
 }
 
 var (
@@ -48,21 +47,18 @@ var (
 /*
 NewProxyCommunication creates a new ProxyCommunication
 */
-func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler NtlmAuhtHandler) (*ProxyCommunication, error) {
-
+func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler NtlmAuhtHandler, eventListener ProxyEventListener) (*ProxyCommunication, error) {
 	connectionCount++
-	connID := connectionCount
-
-	logger := log.WithFields(log.Fields{"Id": connID, "client": clientConn.RemoteAddr()})
-
-	logger.Info("Creating new proxy connection")
 
 	result := &ProxyCommunication{
 		proxyConnection:  proxyConn,
 		clientConnection: clientConn,
-		logger:           logger,
+		eventListener:    eventListener,
 		authHandler:      authHandler,
+		id:               connectionCount,
 	}
+
+	eventListener.OnProxyEvent(EventCreatingConnection, result)
 
 	result.clientReader = bufio.NewReader(clientConn)
 	result.proxyReader = bufio.NewReaderSize(proxyConn, proxyBufferSize)
@@ -71,7 +67,10 @@ func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler 
 	if err := result.parseCurrentRequest(); err != nil {
 		return nil, err
 	}
-	logger.Infof("Processing request %v %v", result.currentRequest.Method, result.currentRequest.RequestURI)
+
+	eventListener.OnProxyEvent(EventProcessingRequest, result)
+
+	//logger.Infof("Processing request %v %v", result.currentRequest.Method, result.currentRequest.RequestURI)
 
 	result.isTunnel = result.currentRequest.Method == http.MethodConnect
 	if result.isTunnel {
@@ -103,8 +102,6 @@ func (pc *ProxyCommunication) HandleConnection() error {
 
 	defer closeConnections(pc)
 
-	logger := pc.logger
-
 	//Check if authentication is nessesary
 	if pc.isNtlmAuhtenticationRequired() {
 		if err := pc.retrieveResponse(); err != nil {
@@ -112,7 +109,8 @@ func (pc *ProxyCommunication) HandleConnection() error {
 		}
 
 		//Phase 1: NTLM Authentication requeseted
-		logger.Debug("NTLM Authentication request detected")
+		//logger.Debug("NTLM Authentication request detected")
+		pc.eventListener.OnProxyEvent(EventNtlmAuthRequestDetected, pc)
 
 		//Retrieve Security Context
 		secctx, err := pc.authHandler.GetContext()
@@ -152,9 +150,25 @@ func (pc *ProxyCommunication) HandleConnection() error {
 	return nil
 }
 
+//GetID returns the communication's id
+func (pc *ProxyCommunication) GetID() int {
+	return pc.id
+}
+
+//GetClientAddr returns the address of the original client
+func (pc *ProxyCommunication) GetClientAddr() net.Addr {
+	return pc.clientConnection.RemoteAddr()
+}
+
+//GetProxyServerAddr returns the address of the original proxy server
+func (pc *ProxyCommunication) GetProxyServerAddr() net.Addr {
+	return pc.proxyConnection.RemoteAddr()
+}
+
 func (pc *ProxyCommunication) getNTLMToken() string {
 	value := pc.peekedResponse.Header.Get(pc.responseHeader)
-	pc.logger.WithFields(log.Fields{"token": value}).Debug("Recieved auth token")
+	//pc.logger.WithFields(log.Fields{"token": value}).Debug("Recieved auth token")
+	pc.eventListener.OnProxyEvent(EventRecievedAuthToken, pc)
 	return value
 }
 
@@ -181,13 +195,15 @@ func (pc *ProxyCommunication) isExpectedResponseCode() bool {
 
 func (pc *ProxyCommunication) sendRequestWithAuthHeader(authPayload []byte) error {
 	token := ntlmAuthMethod + " " + base64.StdEncoding.EncodeToString(authPayload)
-	pc.logger.WithFields(log.Fields{"token": token}).Debug("Sending Token")
+	//pc.logger.WithFields(log.Fields{"token": token}).Debug("Sending Token")
+	pc.eventListener.OnProxyEvent(EventSendingAuthToken, pc)
 	pc.currentRequest.Header.Set(pc.requestHeader, token)
 	return pc.sendRequest()
 }
 
 func (pc *ProxyCommunication) sendRequest() error {
-	pc.logger.Debug("Sending Request")
+	//pc.logger.Debug("Sending Request")
+	pc.eventListener.OnProxyEvent(EventSendingRequest, pc)
 	pc.currentRequest.Write(pc.proxyConnection)
 
 	if err := pc.peekResponse(); err != nil {
@@ -205,11 +221,7 @@ func (pc *ProxyCommunication) peekResponse() error {
 
 	//Peek buffered data from TCP stream
 	peekSize := pc.proxyReader.Buffered()
-	buf, err := pc.proxyReader.Peek(peekSize)
-	if err != nil {
-		pc.logger.Debugf("Peek result: %v", err)
-	}
-	pc.logger.Debugf("Peeked %v bytes", len(buf))
+	buf, _ := pc.proxyReader.Peek(peekSize)
 
 	peekReader := bufio.NewReader(bytes.NewReader(buf))
 
@@ -218,15 +230,13 @@ func (pc *ProxyCommunication) peekResponse() error {
 		return fmt.Errorf("Error parsing http response: %v", err)
 	}
 	response.Body.Close()
-	pc.logger.WithFields(log.Fields{"status": response.StatusCode}).Debug("Peeked status")
 
 	pc.peekedResponse = response
-
+	pc.eventListener.OnProxyEvent(EventPeekedResponse, pc)
 	return nil
 }
 
 func (pc *ProxyCommunication) retrieveResponse() error {
-	pc.logger.Debug("Retrieving repsonse")
 	response, err := http.ReadResponse(pc.proxyReader, pc.currentRequest)
 	if err != nil {
 		return fmt.Errorf("Error parsing http response: %v", err)
@@ -246,7 +256,7 @@ func (pc *ProxyCommunication) retrieveResponse() error {
 	}
 
 	pc.currentResponse = response
-
+	pc.eventListener.OnProxyEvent(EventRecievedResponse, pc)
 	return nil
 }
 
@@ -264,9 +274,9 @@ func (pc *ProxyCommunication) handleRemainingCommunication() error {
 }
 
 func closeConnections(pc *ProxyCommunication) {
-	pc.logger.Info("Closing proxy connection")
 	pc.proxyConnection.Close()
 	pc.clientConnection.Close()
+	pc.eventListener.OnProxyEvent(EventConnectionClosed, pc)
 }
 
 func transfer(destination io.Writer, source io.Reader, wg *sync.WaitGroup) {

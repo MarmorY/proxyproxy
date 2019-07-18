@@ -86,6 +86,8 @@ func TestProxyWithHttps(t *testing.T) {
 func runDummyClient(conn net.Conn, t *testing.T) {
 	defer conn.Close()
 
+	
+
 	request := `CONNECT testdomain:443 HTTP/1.1
 User-Agent: Go Test Environment
 Proxy-Connection: keep-alive
