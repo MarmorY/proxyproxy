@@ -1,21 +1,18 @@
-package authproxy
+package proxyproxy
 
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"strings"
 	"sync"
-	"time"
 
 	"encoding/base64"
 	"io/ioutil"
 	"net/http"
 
-	"github.com/alexbrainman/sspi/ntlm"
 	"github.com/apex/log"
 )
 
@@ -24,6 +21,9 @@ const (
 	proxyBufferSize = 4096
 )
 
+/*
+ProxyCommunication contains all data for a proxy communication
+*/
 type ProxyCommunication struct {
 	isTunnel           bool
 	responseHeader     string
@@ -38,113 +38,30 @@ type ProxyCommunication struct {
 	peekedResponse     *http.Response
 	logger             *log.Entry
 	proxyAddress       string
-}
-
-type NtlmAuhtHandler interface {
-	GetContext() (SecurityContext, error)
-	Close() error
-}
-
-type SecurityContext interface {
-	GetNegotiate() []byte
-	GetAuthenticateFromChallange(challange []byte) ([]byte, error)
-	Close() error
+	authHandler        NtlmAuhtHandler
 }
 
 var (
 	connectionCount = 0
 )
 
-func HandleConnection(clientConn net.Conn, proxyAddress string) {
-
-	communication, err := NewProxyCommunication(clientConn, proxyAddress)
-
-	if err != nil {
-		log.Infof("Error initializig communication: %v", err)
-		return
-	}
-
-	defer closeConnections(communication)
-
-	logger := communication.logger
-
-	//Check if authentication is nessesary
-	if communication.isNtlmAuhtenticationRequired() {
-		if err := communication.retrieveResponse(); err != nil {
-			logger.Errorf("Failed to read response: %v", err)
-			return
-		}
-
-		//Phase 1: NTLM Authentication requeseted
-		//Aquire credentials for current user
-		logger.Debug("NTLM Authentication request detected")
-		cred, err := ntlm.AcquireCurrentUserCredentials()
-		if err != nil {
-			logger.Errorf("Cannot aquire current user credentials: %v", err)
-			return
-		}
-		defer cred.Release()
-
-		//Retrieve Security Context
-		secctx, negotiate, err := ntlm.NewClientContext(cred)
-		if err != nil {
-			logger.Errorf("Cannot retrieve security context: %v", err)
-			return
-		}
-
-		if err := communication.sendRequestWithAuthHeader(negotiate); err != nil {
-			logger.Errorf("Error sending auth phase 1: %v", err)
-			return
-		}
-
-		if communication.isExpectedResponseCode() {
-			if err := communication.retrieveResponse(); err != nil {
-				logger.Errorf("Failed to read response: %v", err)
-				return
-			}
-
-			// Phase 2: Challange token
-			ntlmChallengeHeader := communication.getNTLMToken()
-
-			challengeString := strings.Replace(ntlmChallengeHeader, ntlmAuthMethod+" ", "", -1)
-			challengeBytes, _ := base64.StdEncoding.DecodeString(challengeString)
-			authenticate, err := secctx.Update(challengeBytes)
-			if err != nil {
-				logger.Errorf("Error challanging token: %v\n", err)
-				return
-			}
-
-			if err := communication.sendRequestWithAuthHeader(authenticate); err != nil {
-				logger.Errorf("Error sending auth phase 2: %v", err)
-				return
-			}
-
-		}
-
-	}
-
-	communication.handleRemainingCommunication()
-
-}
-
-func NewProxyCommunication(clientConn net.Conn, proxyAddress string, authHandler NtlmAuhtHandler) (*ProxyCommunication, error) {
+/*
+NewProxyCommunication creates a new ProxyCommunication
+*/
+func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler NtlmAuhtHandler) (*ProxyCommunication, error) {
 
 	connectionCount++
-	connId := connectionCount
+	connID := connectionCount
 
-	logger := log.WithFields(log.Fields{"Id": connId, "client": clientConn.RemoteAddr()})
+	logger := log.WithFields(log.Fields{"Id": connID, "client": clientConn.RemoteAddr()})
 
 	logger.Info("Creating new proxy connection")
-
-	proxyConn, err := net.DialTimeout("tcp", proxyAddress, 10*time.Second)
-	if err != nil {
-		return nil, errors.New(fmt.Sprintf("Error opening connection to proxy: %v", err))
-	}
 
 	result := &ProxyCommunication{
 		proxyConnection:  proxyConn,
 		clientConnection: clientConn,
 		logger:           logger,
+		authHandler:      authHandler,
 	}
 
 	result.clientReader = bufio.NewReader(clientConn)
@@ -172,11 +89,67 @@ func NewProxyCommunication(clientConn net.Conn, proxyAddress string, authHandler
 	prepareRequest(result.currentRequest)
 
 	if err := result.sendRequest(); err != nil {
-		return nil, errors.New(fmt.Sprintf("Error retrieving initial response from proxy: %v", err))
+		return nil, fmt.Errorf("Error retrieving initial response from proxy: %v", err)
 	}
 
 	return result, nil
 
+}
+
+/*
+HandleConnection handels Connection to proxy server
+*/
+func (pc *ProxyCommunication) HandleConnection() error {
+
+	defer closeConnections(pc)
+
+	logger := pc.logger
+
+	//Check if authentication is nessesary
+	if pc.isNtlmAuhtenticationRequired() {
+		if err := pc.retrieveResponse(); err != nil {
+			return fmt.Errorf("Failed to read response: %v", err)
+		}
+
+		//Phase 1: NTLM Authentication requeseted
+		logger.Debug("NTLM Authentication request detected")
+
+		//Retrieve Security Context
+		secctx, err := pc.authHandler.GetContext()
+		if err != nil {
+			return fmt.Errorf("Cannot retrieve security context: %v", err)
+		}
+
+		if err := pc.sendRequestWithAuthHeader(secctx.GetNegotiate()); err != nil {
+			return fmt.Errorf("Error sending auth phase 1: %v", err)
+		}
+
+		if pc.isExpectedResponseCode() {
+			if err := pc.retrieveResponse(); err != nil {
+				return fmt.Errorf("Failed to read response: %v", err)
+			}
+
+			// Phase 2: Challange token
+			ntlmChallengeHeader := pc.getNTLMToken()
+
+			challengeString := strings.Replace(ntlmChallengeHeader, ntlmAuthMethod+" ", "", -1)
+			challengeBytes, _ := base64.StdEncoding.DecodeString(challengeString)
+			authenticate, err := secctx.GetAuthenticateFromChallenge(challengeBytes)
+			if err != nil {
+				return fmt.Errorf("Error challanging token: %v", err)
+			}
+
+			if err := pc.sendRequestWithAuthHeader(authenticate); err != nil {
+				return fmt.Errorf("Error sending auth phase 2: %v", err)
+			}
+
+		}
+
+	}
+
+	pc.handleRemainingCommunication()
+
+	return nil
 }
 
 func (pc *ProxyCommunication) getNTLMToken() string {
@@ -189,10 +162,10 @@ func (pc *ProxyCommunication) parseCurrentRequest() error {
 	//Parse client request
 	request, err := http.ReadRequest(pc.clientReader)
 	if err != nil {
-		return errors.New(fmt.Sprintf("Error parsing request: %v", err))
-	} else {
-		pc.currentRequest = request
+		return fmt.Errorf("Error parsing request: %v", err)
 	}
+
+	pc.currentRequest = request
 
 	return nil
 }
@@ -218,7 +191,7 @@ func (pc *ProxyCommunication) sendRequest() error {
 	pc.currentRequest.Write(pc.proxyConnection)
 
 	if err := pc.peekResponse(); err != nil {
-		return errors.New(fmt.Sprintf("Error peeking response after sending request: %v", err))
+		return fmt.Errorf("Error peeking response after sending request: %v", err)
 	}
 
 	return nil
@@ -242,7 +215,7 @@ func (pc *ProxyCommunication) peekResponse() error {
 
 	response, err := http.ReadResponse(peekReader, pc.currentRequest)
 	if err != nil {
-		return errors.New(fmt.Sprintf("Error parsing http response: %v", err))
+		return fmt.Errorf("Error parsing http response: %v", err)
 	}
 	response.Body.Close()
 	pc.logger.WithFields(log.Fields{"status": response.StatusCode}).Debug("Peeked status")
@@ -256,14 +229,14 @@ func (pc *ProxyCommunication) retrieveResponse() error {
 	pc.logger.Debug("Retrieving repsonse")
 	response, err := http.ReadResponse(pc.proxyReader, pc.currentRequest)
 	if err != nil {
-		return errors.New(fmt.Sprintf("Error parsing http response: %v", err))
+		return fmt.Errorf("Error parsing http response: %v", err)
 	}
 
 	//Read response body into buffer and add this to response
 	if response.ContentLength > 0 {
 		bodyBuff, err := ioutil.ReadAll(response.Body)
 		if err != nil {
-			return errors.New(fmt.Sprintf("Error while reading response body: %v", err))
+			return fmt.Errorf("Error while reading response body: %v", err)
 		}
 		response.Body.Close()
 		response.Body = ioutil.NopCloser(bytes.NewBuffer(bodyBuff))

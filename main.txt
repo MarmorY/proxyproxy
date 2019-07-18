@@ -41,3 +41,10 @@ func main() {
 		}
 		go handleConnection(conn, *destinationProxy)
 }
+
+
+
+	proxyConn, err := net.DialTimeout("tcp", proxyAddress, 10*time.Second)
+	if err != nil {
+		return nil, errors.New(fmt.Sprintf("Error opening connection to proxy: %v", err))
+	}
