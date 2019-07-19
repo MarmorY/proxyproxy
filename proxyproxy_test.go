@@ -24,28 +24,30 @@ const (
 	testContent       = "TestContent"
 )
 
-type testAuthHandler struct {
-	context *proxyproxy.SecurityContext
+type dummyAuthHandler struct {
 }
 
-type testSecurityContext struct {
+type dummySecurityContext struct {
 }
 
-func (h *testAuthHandler) GetContext() (proxyproxy.SecurityContext, error) {
+type dummyProxyEventListener struct {
+}
 
-	return &testSecurityContext{}, nil
+func (h *dummyAuthHandler) GetContext() (proxyproxy.SecurityContext, error) {
+
+	return &dummySecurityContext{}, nil
 
 }
 
-func (h *testAuthHandler) Close() error {
+func (h *dummyAuthHandler) Close() error {
 	return nil
 }
 
-func (c *testSecurityContext) GetNegotiate() []byte {
+func (c *dummySecurityContext) GetNegotiate() []byte {
 	return []byte(testNegotiate)
 }
 
-func (c *testSecurityContext) GetAuthenticateFromChallenge(challenge []byte) ([]byte, error) {
+func (c *dummySecurityContext) GetAuthenticateFromChallenge(challenge []byte) ([]byte, error) {
 	if bytes.Equal(challenge, []byte(testChallenge)) {
 		return []byte("TestAuth"), nil
 	} else {
@@ -53,12 +55,12 @@ func (c *testSecurityContext) GetAuthenticateFromChallenge(challenge []byte) ([]
 	}
 }
 
-func (c *testSecurityContext) Close() error {
+func (c *dummySecurityContext) Close() error {
 	return nil
 }
 
-func newTestAuthHandler() proxyproxy.NtlmAuhtHandler {
-	return &testAuthHandler{}
+func (l *dummyProxyEventListener) OnProxyEvent(t proxyproxy.ProxyEventType, pc *proxyproxy.ProxyCommunication) {
+	fmt.Printf("%s: %v\n", proxyproxy.EventText(t), pc)
 }
 
 func TestProxyWithHttps(t *testing.T) {
@@ -68,8 +70,7 @@ func TestProxyWithHttps(t *testing.T) {
 	go runDummyClient(clientClientConn, t)
 	go runDummyProxy(proxyServerConn, t)
 
-	authHandler := newTestAuthHandler()
-	communication, error := proxyproxy.NewProxyCommunication(clientServerConn, proxyClientConn, authHandler)
+	communication, error := proxyproxy.NewProxyCommunication(clientServerConn, proxyClientConn, &dummyAuthHandler{}, &dummyProxyEventListener{})
 	if error != nil {
 		t.Error(error)
 		return
@@ -85,8 +86,6 @@ func TestProxyWithHttps(t *testing.T) {
 
 func runDummyClient(conn net.Conn, t *testing.T) {
 	defer conn.Close()
-
-	
 
 	request := `CONNECT testdomain:443 HTTP/1.1
 User-Agent: Go Test Environment
