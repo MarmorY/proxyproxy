@@ -13,8 +13,12 @@ import (
 	"github.com/apex/log/handlers/cli"
 )
 
+var (
+	version string
+)
 
 func main() {
+	fmt.Printf("proxyproxy-cli %s\n\n", version)
 
 	log.SetHandler(cli.New(os.Stdout))
 
@@ -51,8 +55,7 @@ func main() {
 	}
 
 	authHandler, err := sspi.NewSSPIAuthHandler()
-	
-	
+
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -64,10 +67,10 @@ func main() {
 }
 
 func handleConnecion(clientConn net.Conn, proxyServer string, authHandler proxyproxy.NtlmAuhtHandler) {
-	
+
 	logger := log.Log.(*log.Logger)
 	cliLogger := NewCliLogger(log.NewEntry(logger))
-	
+
 	proxyConn, err := net.DialTimeout("tcp", proxyServer, 10*time.Second)
 	if err != nil {
 		log.Fatalf("Error opening connection to proxy: %v", err)

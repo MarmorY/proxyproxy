@@ -8,4 +8,15 @@ go:
 env:
 - GO111MODULE=on GOOS=window GOARCH=amd64
 
-script: go build ./...
+script: 
+  - go build ./...
+  - go build -ldflags "-X main.version=$TRAVIS_BRANCH" ./proxyproxy-cli
+
+deploy:
+  provider: releases
+  api_key: $GITHUB_OAUTH_TOKEN
+  file:
+    - "proxyproxy-cli.exe"
+  skip_cleanup: true
+  on:
+    tags: true
