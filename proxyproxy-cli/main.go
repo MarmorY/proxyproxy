@@ -69,14 +69,14 @@ func main() {
 func handleConnecion(clientConn net.Conn, proxyServer string, authHandler proxyproxy.NtlmAuhtHandler) {
 
 	logger := log.Log.(*log.Logger)
-	cliLogger := NewCliLogger(log.NewEntry(logger))
+	cliEventLogger := NewCliEventLogger(log.NewEntry(logger))
 
 	proxyConn, err := net.DialTimeout("tcp", proxyServer, 10*time.Second)
 	if err != nil {
 		log.Fatalf("Error opening connection to proxy: %v", err)
 	}
 
-	communication, err := proxyproxy.NewProxyCommunication(clientConn, proxyConn, authHandler, cliLogger)
+	communication, err := proxyproxy.NewProxyCommunication(clientConn, proxyConn, authHandler, cliEventLogger)
 	if err != nil {
 		log.Errorf("Error creating a new proxy communication: %v", err)
 	} else {

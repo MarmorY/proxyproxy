@@ -165,6 +165,11 @@ func (pc *ProxyCommunication) GetProxyServerAddr() net.Addr {
 	return pc.proxyConnection.RemoteAddr()
 }
 
+//GetCurrentRequest return currently processed request
+func (pc *ProxyCommunication) GetCurrentRequest() *http.Request {
+	return pc.currentRequest
+}
+
 func (pc *ProxyCommunication) getNTLMToken() string {
 	value := pc.peekedResponse.Header.Get(pc.responseHeader)
 	//pc.logger.WithFields(log.Fields{"token": value}).Debug("Recieved auth token")
