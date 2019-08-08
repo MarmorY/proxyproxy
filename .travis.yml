@@ -1,7 +1,5 @@
 language: go
 
-os: windows
-
 go:
 - 1.12.x
 
