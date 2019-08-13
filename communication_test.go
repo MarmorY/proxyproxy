@@ -59,8 +59,8 @@ func (c *dummySecurityContext) Close() error {
 	return nil
 }
 
-func (l *dummyProxyEventListener) OnProxyEvent(t proxyproxy.ProxyEventType, pc *proxyproxy.ProxyCommunication) {
-	fmt.Printf("%s: %v\n", proxyproxy.EventText(t), pc)
+func (l *dummyProxyEventListener) OnProxyEvent(event *proxyproxy.ProxyEvent) {
+	fmt.Printf("%s: %v\n", proxyproxy.EventText(event.EventType), event)
 }
 
 func TestProxyWithHttps(t *testing.T) {

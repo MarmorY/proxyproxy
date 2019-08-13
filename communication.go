@@ -58,7 +58,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler 
 		id:               connectionCount,
 	}
 
-	eventListener.OnProxyEvent(EventCreatingConnection, result)
+	eventListener.OnProxyEvent(newProxyEvent(EventCreatingConnection, InfoEvent, result))
 
 	result.clientReader = bufio.NewReader(clientConn)
 	result.proxyReader = bufio.NewReaderSize(proxyConn, proxyBufferSize)
@@ -68,9 +68,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler 
 		return nil, err
 	}
 
-	eventListener.OnProxyEvent(EventProcessingRequest, result)
-
-	//logger.Infof("Processing request %v %v", result.currentRequest.Method, result.currentRequest.RequestURI)
+	eventListener.OnProxyEvent(newProxyEvent(EventProcessingRequest, InfoEvent, result))
 
 	result.isTunnel = result.currentRequest.Method == http.MethodConnect
 	if result.isTunnel {
@@ -109,8 +107,7 @@ func (pc *ProxyCommunication) HandleConnection() error {
 		}
 
 		//Phase 1: NTLM Authentication requeseted
-		//logger.Debug("NTLM Authentication request detected")
-		pc.eventListener.OnProxyEvent(EventNtlmAuthRequestDetected, pc)
+		pc.eventListener.OnProxyEvent(newProxyEvent(EventNtlmAuthRequestDetected, DebugEvent, pc))
 
 		//Retrieve Security Context
 		secctx, err := pc.authHandler.GetContext()
@@ -172,8 +169,7 @@ func (pc *ProxyCommunication) GetCurrentRequest() *http.Request {
 
 func (pc *ProxyCommunication) getNTLMToken() string {
 	value := pc.peekedResponse.Header.Get(pc.responseHeader)
-	//pc.logger.WithFields(log.Fields{"token": value}).Debug("Recieved auth token")
-	pc.eventListener.OnProxyEvent(EventRecievedAuthToken, pc)
+	pc.eventListener.OnProxyEvent(newProxyEvent(EventRecievedAuthToken, DebugEvent, pc))
 	return value
 }
 
@@ -201,14 +197,13 @@ func (pc *ProxyCommunication) isExpectedResponseCode() bool {
 func (pc *ProxyCommunication) sendRequestWithAuthHeader(authPayload []byte) error {
 	token := ntlmAuthMethod + " " + base64.StdEncoding.EncodeToString(authPayload)
 	//pc.logger.WithFields(log.Fields{"token": token}).Debug("Sending Token")
-	pc.eventListener.OnProxyEvent(EventSendingAuthToken, pc)
+	pc.eventListener.OnProxyEvent(newProxyEvent(EventSendingAuthToken, DebugEvent, pc))
 	pc.currentRequest.Header.Set(pc.requestHeader, token)
 	return pc.sendRequest()
 }
 
 func (pc *ProxyCommunication) sendRequest() error {
-	//pc.logger.Debug("Sending Request")
-	pc.eventListener.OnProxyEvent(EventSendingRequest, pc)
+	pc.eventListener.OnProxyEvent(newProxyEvent(EventSendingRequest, DebugEvent, pc))
 	pc.currentRequest.Write(pc.proxyConnection)
 
 	if err := pc.peekResponse(); err != nil {
@@ -237,7 +232,7 @@ func (pc *ProxyCommunication) peekResponse() error {
 	response.Body.Close()
 
 	pc.peekedResponse = response
-	pc.eventListener.OnProxyEvent(EventPeekedResponse, pc)
+	pc.eventListener.OnProxyEvent(newProxyEvent(EventPeekedResponse, TraceEvent, pc))
 	return nil
 }
 
@@ -261,7 +256,7 @@ func (pc *ProxyCommunication) retrieveResponse() error {
 	}
 
 	pc.currentResponse = response
-	pc.eventListener.OnProxyEvent(EventRecievedResponse, pc)
+	pc.eventListener.OnProxyEvent(newProxyEvent(EventRecievedResponse, DebugEvent, pc))
 	return nil
 }
 
@@ -281,7 +276,7 @@ func (pc *ProxyCommunication) handleRemainingCommunication() error {
 func closeConnections(pc *ProxyCommunication) {
 	pc.proxyConnection.Close()
 	pc.clientConnection.Close()
-	pc.eventListener.OnProxyEvent(EventConnectionClosed, pc)
+	pc.eventListener.OnProxyEvent(newProxyEvent(EventConnectionClosed, InfoEvent, pc))
 }
 
 func transfer(destination io.Writer, source io.Reader, wg *sync.WaitGroup) {
