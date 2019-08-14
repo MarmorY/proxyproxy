@@ -55,6 +55,7 @@ type ProxyEventListener interface {
 //ProxyEvent contains data for an event emittet by proxyproxy
 type ProxyEvent struct {
 	EventType     ProxyEventType
+	ID            int
 	ClientHost    net.Addr
 	ProxyHost     net.Addr
 	Method        string
@@ -71,6 +72,7 @@ func newProxyEvent(t ProxyEventType, s EventSeverity, com *ProxyCommunication) *
 
 	event := &ProxyEvent{
 		EventType:     t,
+		ID:            com.GetID(),
 		ClientHost:    com.GetClientAddr(),
 		ProxyHost:     com.GetProxyServerAddr(),
 		Communication: com,
