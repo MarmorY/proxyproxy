@@ -1,3 +1,7 @@
+/*
+Package proxyproxy implements a proxy that provides transparent handling of NTLM authentication
+against a other http proxy.
+*/
 package proxyproxy
 
 import (
