@@ -18,9 +18,17 @@ import (
 	"net/http"
 )
 
+type ProxyType int
+
 const (
 	ntlmAuthMethod  = "NTLM"
 	proxyBufferSize = 4096
+	//HTTPSProxy Proxy just for encrypted connections
+	HTTPSProxy ProxyType = 1
+	//HTTPProxy Proxy just for unencrypted connections
+	HTTPProxy ProxyType = 2
+	//AutoDetectProxy Proxy autodetects if connection is encrypted
+	AutoDetectProxy ProxyType = 3
 )
 
 /*
@@ -28,6 +36,7 @@ ProxyCommunication contains all data for a proxy communication
 */
 type ProxyCommunication struct {
 	isTunnel           bool
+	isTransparent      bool
 	responseHeader     string
 	requestHeader      string
 	expectedStatusCode int
@@ -52,6 +61,13 @@ var (
 NewProxyCommunication creates a new ProxyCommunication
 */
 func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler NtlmAuhtHandler, eventListener ProxyEventListener) (*ProxyCommunication, error) {
+	return NewProxyCommunicationEx(clientConn, proxyConn, authHandler, eventListener, false, AutoDetectProxy)
+}
+
+/*
+NewProxyCommunicationEx creates a new ProxyCommunication
+*/
+func NewProxyCommunicationEx(clientConn net.Conn, proxyConn net.Conn, authHandler NtlmAuhtHandler, eventListener ProxyEventListener, isTransparent bool, proxyType ProxyType) (*ProxyCommunication, error) {
 	connectionCount++
 
 	result := &ProxyCommunication{
@@ -60,6 +76,7 @@ func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler 
 		eventListener:    eventListener,
 		authHandler:      authHandler,
 		id:               connectionCount,
+		isTransparent:    isTransparent,
 	}
 
 	eventListener.OnProxyEvent(newProxyEvent(EventCreatingConnection, InfoEvent, result))
@@ -74,7 +91,15 @@ func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler 
 
 	eventListener.OnProxyEvent(newProxyEvent(EventProcessingRequest, InfoEvent, result))
 
-	result.isTunnel = result.currentRequest.Method == http.MethodConnect
+	switch proxyType {
+	case AutoDetectProxy:
+		result.isTunnel = result.currentRequest.Method == http.MethodConnect
+	case HTTPSProxy:
+		result.isTunnel = true
+	case HTTPProxy:
+		result.isTunnel = false
+	}
+
 	if result.isTunnel {
 		result.responseHeader = "Proxy-Authenticate"
 		result.requestHeader = "Proxy-Authorization"
@@ -88,6 +113,14 @@ func NewProxyCommunication(clientConn net.Conn, proxyConn net.Conn, authHandler 
 
 	//Send request to ProxyCommunication
 	prepareRequest(result.currentRequest)
+
+	if result.isTransparent {
+		if !result.isTunnel {
+			// Convert to proxy request (abs URL request) for passing goproxy handler
+			result.currentRequest.URL.Scheme = "http"
+			result.currentRequest.URL.Host = result.currentRequest.Host
+		}
+	}
 
 	if err := result.sendRequest(); err != nil {
 		return nil, fmt.Errorf("Error retrieving initial response from proxy: %v", err)
